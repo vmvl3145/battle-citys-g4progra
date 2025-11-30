@@ -1,0 +1,243 @@
+/* changes hechos
+funciones moveTank o shoot no recibían casi nada entre paréntesis y ahora tienen todos los punteros
+implementa el uso de la flecha como operador para mover el tanque real y no una copia (jodia el mapa)
+moveTank verificaba colisiones, pero a veces no actualizaba la matriz
+printMap dibujaba los tanques "por encima" basándose en sus coordenadas
+cambios de lógica un poco más detallados, por ahí tengo los docs en el historial
+traducción de código y comentarios agregados
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <time.h>
+#include "logica.h"
+
+// Escanea el mapa para configurar los estados iniciales de los jugadores
+void inicializarTanques(int **mapa, int filas, int cols, Tanque *t1, Tanque *t2) {
+    // Inicialización de estados básicos
+    t1->vida = 3; t1->dir = 0;
+    t2->vida = 3; t2->dir = 0;
+
+    // Buscar en el mapa las posiciones iniciales (3 y 4)
+    for (int i = 0; i < filas; i++) {
+        for (int j = 0; j < cols; j++) {
+            if (mapa[i][j] == 3) { t1->fila = i; t1->col = j; }
+            else if (mapa[i][j] == 4) { t2->fila = i; t2->col = j; }
+        }
+    }
+}
+
+// Función placeRandomPos reubicada para guia (VERSIÓN CORREGIDA)
+// Reubica el tanque en una celda válida (0), evitando bordes y verificando que realmente exista un espacio libre.
+// Se mantiene el estilo: limpia la posición antigua (si corresponde) y devuelve el Tanque con coordenadas válidas.
+Tanque reubicarTanque(int **mapa, int filas, int cols, Tanque t) {
+    Tanque mTank = t;
+
+    // Seguridad: validar coordenadas antiguas antes de acceder
+    if (mTank.fila >= 0 && mTank.fila < filas && mTank.col >= 0 && mTank.col < cols) {
+        if (mapa[mTank.fila][mTank.col] == 3 || mapa[mTank.fila][mTank.col] == 4) {
+            // Solo borrar si NO es un borde indestructible (por seguridad)
+            // Nota: Si por alguna razón el tanque estaba en el borde, no sobreescribimos el borde.
+            if (mTank.fila > 0 && mTank.fila < filas - 1 && mTank.col > 0 && mTank.col < cols - 1)
+                mapa[mTank.fila][mTank.col] = 0;
+        }
+    }
+
+    // Buscar un espacio libre real. Intentos aleatorios + fallback por si el mapa está casi lleno.
+    int attempts = 0;
+    int max_attempts = filas * cols * 2;
+    int found = 0;
+    int nf = -1, nc = -1;
+
+    // Primero intentos aleatorios pero restringidos al interior (evitar bordes)
+    while (attempts < max_attempts) {
+        attempts++;
+        // evitar bordes: rango 1 .. filas-2 / 1 .. cols-2
+        nf = 1 + rand() % (filas - 2);
+        nc = 1 + rand() % (cols - 2);
+
+        if (mapa[nf][nc] == 0) { found = 1; break; }
+    }
+
+    // Si no se encontró por azar (extremadamente improbable), hacer búsqueda determinística
+    if (!found) {
+        for (int i = 1; i < filas - 1 && !found; i++) {
+            for (int j = 1; j < cols - 1; j++) {
+                if (mapa[i][j] == 0) { nf = i; nc = j; found = 1; break; }
+            }
+        }
+    }
+
+    // Si aún no se encontró (mapa lleno), dejamos las coordenadas originales (fallback seguro)
+    if (!found) {
+        // No hay sitio libre detectable: conservar posición actual (aunque pueda ser inválida)
+        return mTank;
+    }
+
+    // Asignar nueva posición encontrada
+    mTank.fila = nf;
+    mTank.col  = nc;
+
+    // NOTA: La actualización visual del nuevo ID (3 o 4) se debe hacer fuera, donde se llame a esta función.
+    return mTank;
+}
+
+// movimiento por turnos (moveTank), se agregaron id's creados
+// Controla la posición del jugador y evita atravesar paredes.
+// Versión segura: usa punteros directos a Tanque, valida límites y evita fantasmas.
+void moverTanque(int **mapa, int filas, int cols, Tanque *t1, Tanque *t2, int turn, char moveDir) {
+
+    Tanque *out;   // tanque que se mueve
+    Tanque *con;   // tanque contrario (para evitar colisiones)
+    int idOut, idCon;
+
+    // Determinar turno del jugador (punteros directos)
+    if (turn % 2 == 1) { out = t1; con = t2; idOut = 3; idCon = 4; }
+    else              { out = t2; con = t1; idOut = 4; idCon = 3; }
+
+    // Guardar posición antigua
+    int oldF = out->fila;
+    int oldC = out->col;
+
+    // Posición tentativa (inicialmente igual a la actual)
+    int newF = oldF;
+    int newC = oldC;
+
+    // Determinar la nueva posición según la dirección solicitada
+    switch (moveDir) {
+        case 'U': case 'u':
+            out->dir = 0;
+            newF = oldF - 1;
+            break;
+        case 'D': case 'd':
+            out->dir = 1;
+            newF = oldF + 1;
+            break;
+        case 'L': case 'l':
+            out->dir = 2;
+            newC = oldC - 1;
+            break;
+        case 'R': case 'r':
+            out->dir = 3;
+            newC = oldC + 1;
+            break;
+        default:
+            // tecla inválida: no hacer nada
+            return;
+    }
+
+    // Validación de límites: nueva casilla debe estar dentro de la matriz
+    if (newF < 0 || newF >= filas || newC < 0 || newC >= cols) {
+        return;
+    }
+
+    // Validación del contenido: solo moverse si la celda es 0 (vacía)
+    if (mapa[newF][newC] != 0) {
+        return;
+    }
+
+    // Evitar chocar con el otro tanque
+    if (newF == con->fila && newC == con->col) {
+        return;
+    }
+
+    // --- Actualización visual segura ---
+    // Borrar la casilla antigua SÓLO si realmente contenía el ID del tanque
+    // (esto evita borrar muros por errores previos)
+    if (oldF >= 0 && oldF < filas && oldC >= 0 && oldC < cols) {
+        if (mapa[oldF][oldC] == idOut) mapa[oldF][oldC] = 0;
+    }
+
+    // Dibujar la nueva posición
+    mapa[newF][newC] = idOut;
+
+    // Actualizar la estructura del tanque en memoria (estado real)
+    out->fila = newF;
+    out->col  = newC;
+}
+
+// Lógica de Disparo (shoot)
+// Implementación robusta: recorrido de la "bala" hasta que choque con algo o salga del mapa.
+// Cuando impacta a un tanque, decrementa vida, reubica de forma segura y actualiza el mapa.
+void disparar(int **mapa, int filas, int cols, int sRow, int sCol, int sDir, int shooter, Tanque *t1, Tanque *t2) {
+    struct shoot s;
+    s.row = sRow;
+    s.col = sCol;
+
+    while (1) {
+        // avanzar la bala
+        switch (sDir) {
+            case 0: s.row--; break; // Arriba
+            case 1: s.row++; break; // Abajo
+            case 2: s.col--; break; // Izquierda
+            case 3: s.col++; break; // Derecha
+            default: return; // dirección inválida
+        }
+
+        // Si sale del mapa, la bala desaparece
+        if (s.row < 0 || s.row >= filas || s.col < 0 || s.col >= cols) break;
+
+        // Interacción con el entorno según material
+        if (mapa[s.row][s.col] == 2) {
+            // Acero: bala se detiene (no rompe)
+            break;
+        } else if (mapa[s.row][s.col] == 1) {
+            // Ladrillo: se rompe y la celda queda libre
+            mapa[s.row][s.col] = 0;
+            break;
+        } else {
+            // Posible impacto a jugadores (si la bala alcanza su coordenada)
+            if (shooter == 1) {
+                // Dispara player1, objetivo player2
+                if (s.row == t2->fila && s.col == t2->col) {
+                    // Reducir vida del objetivo
+                    t2->vida--;
+
+                    // Guardar posición visual vieja del objetivo (si coincide)
+                    if (t2->fila >= 0 && t2->fila < filas && t2->col >= 0 && t2->col < cols) {
+                        if (mapa[t2->fila][t2->col] == 4)
+                            mapa[t2->fila][t2->col] = 0;
+                    }
+
+                    // Respawn: Buscar nueva posición válida y actualizar el mapa/struct de forma segura
+                    Tanque nuevoT2 = reubicarTanque(mapa, filas, cols, *t2);
+
+                    // Actualizar struct
+                    *t2 = nuevoT2;
+
+                    // Dibujar nueva posición en el mapa (si es válida)
+                    if (t2->fila >= 0 && t2->fila < filas && t2->col >= 0 && t2->col < cols)
+                        mapa[t2->fila][t2->col] = 4;
+
+                    break;
+                }
+            } else if (shooter == 2) {
+                // Dispara player2, objetivo player1
+                if (s.row == t1->fila && s.col == t1->col) {
+                    t1->vida--;
+
+                    if (t1->fila >= 0 && t1->fila < filas && t1->col >= 0 && t1->col < cols) {
+                        if (mapa[t1->fila][t1->col] == 3)
+                            mapa[t1->fila][t1->col] = 0;
+                    }
+
+                    Tanque nuevoT1 = reubicarTanque(mapa, filas, cols, *t1);
+                    *t1 = nuevoT1;
+
+                    if (t1->fila >= 0 && t1->fila < filas && t1->col >= 0 && t1->col < cols)
+                        mapa[t1->fila][t1->col] = 3;
+
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// Verifica condición de victoria por vidas
+int verificarGanador(Tanque t1, Tanque t2) {
+    if (t1.vida <= 0) return 2; // Gana J2
+    if (t2.vida <= 0) return 1; // Gana J1
+    return 0;
+}
